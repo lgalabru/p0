@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/p0-core", "crates/p0-cli"]
+# Guest crates build for wasm32-wasip2 separately (see Justfile).
+exclude = ["crates/p0-sdk", "programs/*"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "process", "signal"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

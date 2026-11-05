@@ -1,0 +1,20 @@
+[package]
+name = "iphone-duo"
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+
+[dependencies]
+p0-sdk = { path = "../../crates/p0-sdk" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]

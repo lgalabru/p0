@@ -1,0 +1,16 @@
+[package]
+name = "p0-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-tungstenite = "0.28"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+wasmtime = { version = "50", default-features = false, features = ["component-model", "cranelift", "cache", "parallel-compilation", "runtime", "std"] }
+wasmtime-wasi = "50"
+zeroize = "1"

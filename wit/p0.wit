@@ -1,0 +1,51 @@
+package p0:host@0.1.0;
+
+/// Browser control. Tabs are u32 handles owned by the host.
+/// Every call that touches the DOM is event-driven host-side (MutationObserver /
+/// CDP events), never polled from the guest.
+interface browser {
+  /// Open a new tab and wait for DOMContentLoaded.
+  tab-open: func(url: string) -> result<u32, string>;
+  /// Navigate and wait for DOMContentLoaded (not `load`: faster).
+  goto: func(tab: u32, url: string) -> result<_, string>;
+  /// Evaluate JS in the page; promises are awaited; result is JSON.
+  /// Use this for hot paths: run the whole loop in-page, return once.
+  eval: func(tab: u32, js: string) -> result<string, string>;
+  /// Wait for selector (survives navigations), then el.click().
+  click: func(tab: u32, selector: string, timeout-ms: u32) -> result<_, string>;
+  /// Wait for selector, set value through the native setter, fire input/change.
+  fill: func(tab: u32, selector: string, value: string, timeout-ms: u32) -> result<_, string>;
+  /// Type a vault secret into the page. The guest never sees the value; the
+  /// host refuses unless the page origin is in the program manifest.
+  fill-secret: func(tab: u32, selector: string, key: string, timeout-ms: u32) -> result<_, string>;
+  /// Wait until selector matches (MutationObserver, survives navigations).
+  wait-for: func(tab: u32, selector: string, timeout-ms: u32) -> result<_, string>;
+  /// Wait until location.href contains `needle`; returns the url.
+  wait-url: func(tab: u32, needle: string, timeout-ms: u32) -> result<string, string>;
+  url: func(tab: u32) -> result<string, string>;
+}
+
+interface sys {
+  log: func(msg: string);
+  /// macOS notification + optional ntfy push (P0_NTFY_TOPIC).
+  notify: func(title: string, body: string);
+  /// `p0 run ... --set key=value`
+  arg: func(name: string) -> option<string>;
+  now-ms: func() -> u64;
+  sleep-ms: func(ms: u32);
+}
+
+/// Per-program vault (Keychain, Touch ID once per run).
+interface vault {
+  /// Non-secret fields only (name, phone, zip...). Secrets: browser.fill-secret.
+  get: func(key: string) -> result<string, string>;
+}
+
+world program {
+  import browser;
+  import sys;
+  import vault;
+  /// JSON: {name, origins: [..], fields: [{key, label, secret?, optional?}]}
+  export manifest: func() -> string;
+  export run: func() -> result<_, string>;
+}

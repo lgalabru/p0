@@ -1,0 +1,18 @@
+[package]
+name = "p0-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "p0"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+p0-core = { path = "../p0-core" }
+clap = { version = "4", features = ["derive"] }
+serde_json.workspace = true
+zeroize = "1"
+rpassword = "7"
