@@ -12,12 +12,9 @@
   <img alt="macOS" src="https://img.shields.io/badge/vault-Keychain%20%2B%20Touch%20ID-black">
 </p>
 
-**p0 is a priority lane for the web.** You write a program in Rust and compile
-it to WebAssembly. The program watches a website for the moment something
-happens, such as a phone coming into stock or a slot opening, and then acts on
-it from start to finish, including paying. It drives a real, warm Chrome. The
-data it needs, such as your address and card, sits in the macOS Keychain and is
-unlocked with Touch ID once per run.
+**p0 is a priority lane for the web.** Rust programs, compiled to WebAssembly,
+watch a site for the moment something happens and complete the purchase in a
+real Chrome. Your details stay in the Keychain, unlocked with Touch ID.
 
 ## Getting started
 
