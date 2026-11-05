@@ -103,77 +103,186 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Steps mapped from a live guest walk-through (2026-11-04, secure6.store.apple.com).
-/// Every step waits on something unique to the *next* step before acting, so the
-/// shared `#rs-checkout-continue-button-bottom` id is never double-clicked.
+const CONTINUE: &str = "#rs-checkout-continue-button-bottom";
+const CONTACT: &str = "checkout.pickupContact.selfPickupContact.selfContact.address.";
+const CARD: &str = "checkout.billing.billingOptions.selectedBillingOptions.creditCard.cardInputs.cardInput-0.";
+const BILL: &str = "checkout.billing.billingOptions.selectedBillingOptions.creditCard.billingAddress.address.";
+
+fn id(s: &str) -> String {
+    format!("[id=\"{s}\"]")
+}
+
+/// Checkout as a state machine over Apple's `?_s=<Step>-…` URLs, so it works
+/// whether or not an Apple ID session is active:
+/// - signed in: Apple skips signIn and may prefill or skip steps; we use it.
+/// - not signed in: "Continue as Guest" (no session to expire, no 2FA).
+///
+/// Each handler only fills fields that are actually on the page, and the loop
+/// waits for the step to *change* before acting again, so the shared continue
+/// button id is never double-clicked.
 fn checkout(tab: &Tab, dry: bool) -> Result<()> {
     let t0 = now_ms();
     let lap = |what: &str| info!("checkout +{}ms {what}", now_ms() - t0);
-    const CONTINUE: &str = "#rs-checkout-continue-button-bottom";
-    const CONTACT: &str = "checkout.pickupContact.selfPickupContact.selfContact.address.";
-    const CARD: &str = "checkout.billing.billingOptions.selectedBillingOptions.creditCard.cardInputs.cardInput-0.";
-    const BILL: &str = "checkout.billing.billingOptions.selectedBillingOptions.creditCard.billingAddress.address.";
-    let id = |s: &str| format!("[id=\"{s}\"]");
 
     tab.goto("https://www.apple.com/shop/bag")?;
     tab.click("button[data-autom=checkout]")?;
     let url = tab.wait_url("store.apple.com/shop/", 20_000)?;
     if url.contains("/signIn") {
-        tab.click("text=Continue as Guest")?; // no Apple ID session to expire, no 2FA
+        lap("no Apple ID session: guest checkout");
+        tab.click("text=Continue as Guest")?;
+    } else {
+        lap("Apple ID session active: using it");
     }
-    tab.wait_url("_s=Fulfillment", 20_000)?;
-    lap("fulfillment");
+    tab.wait_url("_s=", 30_000)?;
 
-    // Pickup at R715.
+    let mut step = String::new();
+    for _ in 0..12 {
+        step = next_step(tab, &step)?;
+        lap(&step);
+        match step.as_str() {
+            "Fulfillment" => fulfillment(tab)?,
+            "PickupContact" => pickup_contact(tab)?,
+            "Billing" => {
+                billing(tab)?;
+                if arg("stop").as_deref() == Some("billing") {
+                    lap("stop=billing: not submitting payment");
+                    return Ok(());
+                }
+                tab.click(CONTINUE)?;
+            }
+            "Review" => return review(tab, dry, t0),
+            other => bail!("unknown checkout step {other:?} ({})", tab.url()?),
+        }
+    }
+    bail!("checkout did not reach Review (stuck at {step})")
+}
+
+/// Current `_s=` step name once it differs from `prev` (SPA navigations).
+fn next_step(tab: &Tab, prev: &str) -> Result<String> {
+    let js = format!(
+        r#"new Promise((res, rej) => {{
+  const cur = () => ((location.href.match(/[?&]_s=([A-Za-z]+)/) || [])[1] || "");
+  const t0 = Date.now();
+  const tick = () => {{
+    const s = cur();
+    if (s && s !== {prev}) return res(s);
+    Date.now() - t0 > 45000 ? rej(new Error("stuck at step " + s)) : setTimeout(tick, 25);
+  }};
+  tick();
+}})"#,
+        prev = p0_sdk::js_str(prev)
+    );
+    for _ in 0..3 {
+        match tab.eval_json::<String>(&js) {
+            Ok(s) => return Ok(s),
+            Err(e) if e.contains("navigated") || e.contains("context") => continue, // full page load: retry
+            Err(e) => return Err(e),
+        }
+    }
+    bail!("could not read checkout step")
+}
+
+/// Fill `sel` only if it is on the page (signed-in checkouts may prefill/skip).
+fn fill_if(tab: &Tab, sel: &str, value: &str) -> Result<bool> {
+    if value.is_empty() || !tab.exists(sel)? {
+        return Ok(false);
+    }
+    tab.fill(sel, value)?;
+    Ok(true)
+}
+
+fn fulfillment(tab: &Tab) -> Result<()> {
+    tab.wait_for(CONTINUE, 20_000)?;
     tab.click("text=I\u{2019}ll pick it up")?;
     let store_sel = format!("input[name=store-locator-result][value={}]", store());
-    tab.click(&store_sel)?;
-    let ok: bool = tab.eval_json(&format!("(e => !!e && e.checked && !e.disabled)(document.querySelector({}))", p0_sdk::js_str(&store_sel)))?;
+    // The store list appears only when Apple knows a location; otherwise it
+    // shows a search box. Wait for either, and search our ZIP if needed.
+    const SEARCH: &str = "[id=\"checkout.fulfillment.pickupTab.pickup.storeLocator.searchInput\"]";
+    tab.wait_for(&format!("{store_sel}, {SEARCH}"), 20_000)?;
+    if !tab.exists(&store_sel)? {
+        info!("no store list yet: searching ZIP {}", zip());
+        tab.fill(SEARCH, &zip())?;
+        tab.click("[id=\"checkout.fulfillment.pickupTab.pickup.storeLocator.search\"]")?;
+    }
+    tab.click_within(&store_sel, 30_000)?;
+    let ok: bool = tab.eval_json(&format!(
+        "(e => !!e && e.checked && !e.disabled)(document.querySelector({}))",
+        p0_sdk::js_str(&store_sel)
+    ))?;
     if !ok {
         bail!("store {} not selectable for pickup", store());
     }
-    tab.click(CONTINUE)?;
-    tab.wait_url("_s=PickupContact", 20_000)?;
-    lap("pickup contact");
+    tab.click(CONTINUE)
+}
 
-    let first = vault_get("contact.first_name")?;
-    let last = vault_get("contact.last_name")?;
-    tab.fill(&id(&format!("{CONTACT}firstName")), &first)?;
-    tab.fill(&id(&format!("{CONTACT}lastName")), &last)?;
-    tab.fill(&id(&format!("{CONTACT}emailAddress")), &vault_get("contact.email")?)?;
-    tab.fill(&id(&format!("{CONTACT}fullDaytimePhone")), &vault_get("contact.phone")?)?;
-    tab.click(CONTINUE)?;
-    tab.wait_url("_s=Billing", 20_000)?;
-    lap("billing");
+fn pickup_contact(tab: &Tab) -> Result<()> {
+    tab.wait_for(CONTINUE, 20_000)?;
+    // Self pickup is the default; clicking it again re-renders and wipes fields.
+    // Fields render after the button: give them a moment (signed-in sessions
+    // may show a prefilled summary instead, hence not an error).
+    let _ = tab.wait_for(&id(&format!("{CONTACT}firstName")), 5_000);
+    fill_if(tab, &id(&format!("{CONTACT}firstName")), &vault_get("contact.first_name")?)?;
+    fill_if(tab, &id(&format!("{CONTACT}lastName")), &vault_get("contact.last_name")?)?;
+    fill_if(tab, &id(&format!("{CONTACT}emailAddress")), &vault_get("contact.email")?)?;
+    fill_if(tab, &id(&format!("{CONTACT}fullDaytimePhone")), &vault_get("contact.phone")?)?;
+    tab.click(CONTINUE)
+}
 
-    tab.click(&id("checkout.billing.billingoptions.credit"))?;
-    tab.fill_secret(&id(&format!("{CARD}cardNumber")), "card.number")?;
+/// New card (guest, or signed in without a saved card): number + expiry + CVV +
+/// billing address. Saved card (signed in): Apple usually only asks for its CVV.
+fn billing(tab: &Tab) -> Result<()> {
+    tab.wait_for(CONTINUE, 20_000)?;
+    let credit = id("checkout.billing.billingoptions.credit");
+    let cvv_or_number = format!("{}, [id*=\"securityCode\"]", id(&format!("{CARD}cardNumber")));
+    // Payment options render after the continue button; a signed-in session
+    // with a saved card may already show its CVV field instead.
+    tab.wait_for(&format!("{credit}, {cvv_or_number}"), 20_000)?;
+    // Selecting "credit" asks Apple's server for the card form (~10s). A click
+    // before hydration is a no-op, so re-click until the form shows up.
+    for attempt in 0..4 {
+        if tab.exists(&cvv_or_number)? {
+            break;
+        }
+        if tab.exists(&credit)? {
+            tab.click(&credit)?;
+        }
+        if tab.wait_for(&cvv_or_number, 15_000).is_ok() {
+            break;
+        }
+        info!("card form not shown yet (attempt {attempt})");
+    }
+    if !tab.exists(&cvv_or_number)? {
+        bail!("card form never appeared on Billing");
+    }
+
+    let number = id(&format!("{CARD}cardNumber"));
+    if !tab.exists(&number)? {
+        info!("saved card on file: entering CVV only");
+        return tab.fill_secret("[id*=\"securityCode\"]", "card.cvv");
+    }
+    tab.fill_secret(&number, "card.number")?;
     tab.fill_secret(&id(&format!("{CARD}expiration")), "card.exp")?;
     tab.fill_secret(&id(&format!("{CARD}securityCode")), "card.cvv")?;
-    tab.fill(&id(&format!("{BILL}firstName")), &first)?;
-    tab.fill(&id(&format!("{BILL}lastName")), &last)?;
-    tab.fill(&id(&format!("{BILL}street")), &vault_get("billing.street")?)?;
-    let street2 = vault_get("billing.street2")?;
-    if !street2.is_empty() {
-        tab.fill(&id(&format!("{BILL}street2")), &street2)?;
+    fill_if(tab, &id(&format!("{BILL}firstName")), &vault_get("contact.first_name")?)?;
+    fill_if(tab, &id(&format!("{BILL}lastName")), &vault_get("contact.last_name")?)?;
+    fill_if(tab, &id(&format!("{BILL}street")), &vault_get("billing.street")?)?;
+    fill_if(tab, &id(&format!("{BILL}street2")), &vault_get("billing.street2")?)?;
+    if fill_if(tab, &id(&format!("{BILL}zipLookup.postalCode")), &vault_get("billing.zip")?)? {
+        // ZIP lookup populates a city/state <select>; pick the vault's city.
+        let picked: String = tab.eval_json(
+            &SELECT_CITY_JS
+                .replace("__SEL__", &p0_sdk::js_str(&id(&format!("{BILL}zipLookup.zipLookupCityState"))))
+                .replace("__CITY__", &p0_sdk::js_str(&vault_get("billing.city")?))
+                .replace("__STATE__", &p0_sdk::js_str(&vault_get("billing.state")?)),
+        )?;
+        info!("billing city/state: {picked}");
     }
-    tab.fill(&id(&format!("{BILL}zipLookup.postalCode")), &vault_get("billing.zip")?)?;
-    // ZIP lookup populates a city/state <select>; pick the vault's city.
-    let city_sel = id(&format!("{BILL}zipLookup.zipLookupCityState"));
-    let picked: String = tab.eval_json(&SELECT_CITY_JS
-        .replace("__SEL__", &p0_sdk::js_str(&city_sel))
-        .replace("__CITY__", &p0_sdk::js_str(&vault_get("billing.city")?))
-        .replace("__STATE__", &p0_sdk::js_str(&vault_get("billing.state")?)))?;
-    info!("billing city/state: {picked}");
-    if arg("stop").as_deref() == Some("billing") {
-        lap("stop=billing: not submitting payment");
-        return Ok(());
-    }
-    tab.click(CONTINUE)?;
-    tab.wait_url("_s=Review", 30_000)?;
-    lap("review");
+    Ok(())
+}
 
+fn review(tab: &Tab, dry: bool, t0: u64) -> Result<()> {
     // Price cap: read the order total from the review page.
+    tab.wait_for(CONTINUE, 20_000)?;
     let total: f64 = tab.eval_json(TOTAL_JS)?;
     info!("order total ${total:.2} (cap ${MAX_TOTAL_USD:.0})");
     if !(total > 0.0 && total <= MAX_TOTAL_USD) {
@@ -181,15 +290,14 @@ fn checkout(tab: &Tab, dry: bool) -> Result<()> {
         bail!("total ${total:.2} outside (0, {MAX_TOTAL_USD}]");
     }
     if dry {
-        lap("DRY RUN: stopping before Place Order");
+        info!("checkout +{}ms DRY RUN: stopping before Place Order", now_ms() - t0);
         notify("p0 dry-run reached review", &format!("${total:.2} — not ordered"));
         return Ok(());
     }
-
     let clicked: String = tab.eval_json(PLACE_ORDER_JS)?;
-    lap(&format!("clicked {clicked:?}"));
-    let done = tab.wait_url("thankyou", 60_000).or_else(|_| tab.wait_url("_s=Thank", 1))?;
-    lap("ORDER PLACED");
+    info!("checkout +{}ms clicked {clicked:?}", now_ms() - t0);
+    let done = tab.wait_url("hankyou", 60_000)?; // thankyou / Thankyou
+    info!("checkout +{}ms ORDER PLACED", now_ms() - t0);
     notify("p0: iPhone Duo ORDERED", &format!("${total:.2} — pickup at Downtown Brooklyn\n{done}"));
     Ok(())
 }
@@ -229,6 +337,11 @@ const PLACE_ORDER_JS: &str = r#"new Promise((res, rej) => {
 
 fn store() -> String {
     arg_or("store", STORE)
+}
+
+/// ZIP used to find the pickup store when Apple has no location for the session.
+fn zip() -> String {
+    arg_or("zip", "11201")
 }
 
 p0_sdk::program!(main, MANIFEST);

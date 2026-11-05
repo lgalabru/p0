@@ -26,6 +26,14 @@ Downtown Brooklyn only. Buy it the moment it appears.
 | `Billing-init` | `[id="checkout.billing.billingoptions.credit"]`; card `[id="…creditCard.cardInputs.cardInput-0.{cardNumber,expiration,securityCode}"]` (plain inputs, no iframe); billing `[id="…creditCard.billingAddress.address.{firstName,lastName,street,street2,zipLookup.postalCode}"]`; the ZIP fills the `…zipLookup.zipLookupCityState` select; continue | URL `_s=Review` |
 | `Review` | Check the total against the cap; click the button matching `/place (your )?order/i` | URL `thankyou` |
 
+**Session first, guest second.** Checkout is a state machine over the `_s=`
+step in the URL. With an active Apple ID session, Apple skips `signIn`, and
+p0 uses the session, filling only the fields that are on the page. On
+Billing, a saved card that asks only for its CVV gets `card.cvv`. Without a
+session, p0 clicks `Continue as Guest`. If Apple has no location for the
+session, Fulfillment shows a store-search box, and p0 searches `--set zip`
+(default 11201) before picking the store.
+
 The continue button id is shared by every step. Always wait for the next
 step's URL or fields before clicking again.
 
