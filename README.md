@@ -2,7 +2,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-github-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="docs/assets/banner-github-light.png">
-    <img alt="p0" width="100%" src="docs/assets/banner-github-light.png">
+    <img alt="p0" width="50%" src="docs/assets/banner-github-light.png">
   </picture>
 </div>
 
